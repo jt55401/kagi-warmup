@@ -11,6 +11,8 @@ import requests
 import json
 from bs4 import BeautifulSoup
 import torch
+import logging
+logging.basicConfig(level=logging.INFO)
 
 if not os.path.exists("cache"):
     os.makedirs("cache")
@@ -35,6 +37,7 @@ def crawl_page(url):
             body = f.read()
         return body
 
+    logging.info(f"Crawling {url}")
     response = requests.get(url)
     if response.status_code != 200:
         return None
@@ -58,8 +61,10 @@ def get_stories(n=500):
     response = requests.get(url)
     top_stories = response.json()[:n]
     
+    logging.info(f"Getting stories.")
     stories = []
-    for story_id in top_stories:
+
+    def get_story(story_id):
         story_url = f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json"
         story_response = requests.get(story_url)
         story_data = story_response.json()
@@ -68,13 +73,16 @@ def get_stories(n=500):
         if story_body is None:
             story_body = ""
 
-        stories.append({
+        return {
             'id': story_data.get('id'),
             'title': story_data.get('title'),
             'body': story_body,
             'url': story_data.get('url'),
             'original_rank': len(stories) + 1,
-        })
+        }
+    with ThreadPoolExecutor(5) as executor:
+        stories = list(executor.map(get_story, top_stories))
+        
     
     # save to cache
     with open(cache, 'w') as f:
@@ -85,6 +93,7 @@ def get_stories(n=500):
 
 # re-rank
 def re_rank(stories, profile):
+    logging.info(f"Ranking stories.")
     profile_vec = get_embeddings(profile)
     for story in stories:
         story['score'] = util.pytorch_cos_sim(profile_vec, story['vec']).item()
@@ -107,6 +116,7 @@ def get_embeddings(text):
             l = l.cuda()
         return l
     
+    logging.info(f"Getting embeddings for {text}")
     sentences = [text]
     embeddings = model.encode(sentences,convert_to_tensor=True)
 
@@ -151,4 +161,4 @@ def get_news():
     return results_template.render(results=stories)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
