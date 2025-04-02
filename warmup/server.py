@@ -1,7 +1,7 @@
 # server.py
 
 from flask import Flask, jsonify, request
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, util
 from concurrent.futures import ThreadPoolExecutor
 import jinja2
 import os
@@ -10,6 +10,7 @@ import numpy as np
 import requests
 import json
 from bs4 import BeautifulSoup
+import torch
 
 if not os.path.exists("cache"):
     os.makedirs("cache")
@@ -28,7 +29,7 @@ def crawl_page(url):
     if url is None:
         return None
     url_hash = hashlib.md5(url.encode()).hexdigest()
-    cache = f"cache/page_text_${url_hash}.txt"
+    cache = f"cache/page_text_{url_hash}.txt"
     if os.path.exists(cache):
         with open(cache, 'r') as f:
             body = f.read()
@@ -86,7 +87,7 @@ def get_stories(n=500):
 def re_rank(stories, profile):
     profile_vec = get_embeddings(profile)
     for story in stories:
-        story['score'] = (story['vec'] @ profile_vec.T).item()
+        story['score'] = util.pytorch_cos_sim(profile_vec, story['vec']).item()
     stories.sort(key=lambda x: x['score'], reverse=True)
     for i, story in enumerate(stories):
         story['rank'] = i + 1
@@ -99,13 +100,18 @@ def get_embeddings(text):
     # save to cache
     cache_file = f"cache/{text_hash}.npy"
     if os.path.exists(cache_file):
-        return np.load(cache_file)
+        #convert to tensor in gpu
+        l = np.load(cache_file)
+        l = torch.tensor(l)
+        if torch.cuda.is_available():
+            l = l.cuda()
+        return l
     
     sentences = [text]
-    embeddings = model.encode(sentences)
+    embeddings = model.encode(sentences,convert_to_tensor=True)
 
     # save to cache
-    np.save(cache_file, embeddings)
+    np.save(cache_file, embeddings.cpu().numpy())
 
     return embeddings
 
@@ -128,15 +134,15 @@ def get_news():
         num = 1
     
     stories = get_stories( num )
-    
-    # get embeddings for each story, in parallel
+
+    # less efficient, but, we can cache each story's embedding individulally this way for overall better performance under load
     def get_story_embeddings(story):
         text = story['title'] + ' ' + story['body']
         story['vec'] = get_embeddings(text)
         return story
     with ThreadPoolExecutor() as executor:
         stories = list(executor.map(get_story_embeddings, stories))
-
+    
     stories = re_rank(stories, input['profile'])
 
     # take only title, url, original_rank and rank
