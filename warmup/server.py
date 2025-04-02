@@ -36,27 +36,23 @@ def crawl_page(url):
         with open(cache, 'r') as f:
             body = f.read()
         return body
+    try:
+        logging.info(f"Crawling {url}")
+        response = requests.get(url,timeout=5)
+        if response.status_code != 200:
+            return None
+        soup = BeautifulSoup(response.text, 'html.parser')
+        body = soup.get_text()
 
-    logging.info(f"Crawling {url}")
-    response = requests.get(url)
-    if response.status_code != 200:
+        with open(cache, 'w') as f:
+            f.write(body)
+
+        return body
+    except Exception as e:
+        logging.error(f"Error crawling {url}: {e}")
         return None
-    soup = BeautifulSoup(response.text, 'html.parser')
-    body = soup.get_text()
-
-    with open(cache, 'w') as f:
-        f.write(body)
-
-    return body
 
 def get_stories(n=500):
-    cache = "cache/topstories.json"
-    if os.path.exists(cache):
-        with open(cache, 'r') as f:
-            top_stories = json.load(f)
-        if len(top_stories) >= n:
-            return top_stories[:n]
-
     url = "https://hacker-news.firebaseio.com/v0/topstories.json"
     response = requests.get(url)
     top_stories = response.json()[:n]
@@ -68,25 +64,31 @@ def get_stories(n=500):
         story_url = f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json"
         story_response = requests.get(story_url)
         story_data = story_response.json()
+        story_title = story_data.get('title')
 
         story_body = crawl_page(story_data.get('url'))
         if story_body is None:
             story_body = ""
 
+        text = story_body
+        # remove lines with < 200 characters
+        text = ' '.join([line for line in text.split('\n') if len(line) > 200])
+        text = story_title + '\n' + text
+        vec = get_embeddings(text)
+
         return {
             'id': story_data.get('id'),
-            'title': story_data.get('title'),
-            'body': story_body,
+            'title': story_title,
+            'body': text,
             'url': story_data.get('url'),
-            'original_rank': len(stories) + 1,
+            'vec': vec,
         }
-    with ThreadPoolExecutor(5) as executor:
+    with ThreadPoolExecutor(10) as executor:
         stories = list(executor.map(get_story, top_stories))
-        
     
-    # save to cache
-    with open(cache, 'w') as f:
-        json.dump(stories, f)
+    # add original ranks
+    for i, story in enumerate(stories):
+        story['original_rank'] = i + 1
     
     return stories
 
@@ -144,14 +146,6 @@ def get_news():
         num = 1
     
     stories = get_stories( num )
-
-    # less efficient, but, we can cache each story's embedding individulally this way for overall better performance under load
-    def get_story_embeddings(story):
-        text = story['title'] + ' ' + story['body']
-        story['vec'] = get_embeddings(text)
-        return story
-    with ThreadPoolExecutor() as executor:
-        stories = list(executor.map(get_story_embeddings, stories))
     
     stories = re_rank(stories, input['profile'])
 
