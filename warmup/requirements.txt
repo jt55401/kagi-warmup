@@ -1,0 +1,5 @@
+requests
+flask
+sentence-transformers
+jinja2
+bs4
