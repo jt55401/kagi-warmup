@@ -26,7 +26,7 @@ templateEnv = jinja2.Environment(loader=templateLoader)
 index_template = templateEnv.get_template("index.j2")
 results_template = templateEnv.get_template("results.j2")
 
-model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 
 def crawl_page(url):
