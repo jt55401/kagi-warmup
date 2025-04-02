@@ -35,11 +35,15 @@ def crawl_page(url):
     if os.path.exists(cache):
         with open(cache, 'r') as f:
             body = f.read()
+        if body == '':
+            return None
         return body
     try:
         logging.info(f"Crawling {url}")
         response = requests.get(url,timeout=5)
         if response.status_code != 200:
+            with open(cache, 'w') as f:
+                f.write('')
             return None
         soup = BeautifulSoup(response.text, 'html.parser')
         body = soup.get_text()
@@ -50,6 +54,8 @@ def crawl_page(url):
         return body
     except Exception as e:
         logging.error(f"Error crawling {url}: {e}")
+        with open(cache, 'w') as f:
+            f.write('')
         return None
 
 def get_stories(n=500):
@@ -73,6 +79,8 @@ def get_stories(n=500):
         text = story_body
         # remove lines with < 200 characters
         text = ' '.join([line for line in text.split('\n') if len(line) > 200])
+        # take first 200k
+        text = text[:200000]
         text = story_title + '\n' + text
         vec = get_embeddings(text)
 
