@@ -67,9 +67,12 @@ python server.py
     * DistilGPT2 - distilled version of an old model - might still be ok for this task.
     * T5-Small or T5-Base (or even Tiny? with their efficient variants also worth considering) - text-text models, also work with ONNX
     * prhegde/t5-query-reformulation-RL - this is specifically designed for a task such as what we're doing, and based on T5-Base. Advantage being it ensures the queries which are returned are more diverse.
-
+2) Create a benchmarking script/notebook, and evaluate the models for speed and quality of results
+3) Make a decision on model
+4) Create a little webapp to demonstrate it
 
 ## Future thoughts
 
 1) Excluded for this exercise, but, I think it'd be interesting to take one of the smaller models on the list, and fine tune it using ORCAS or even our own Kagi data.
-
+2) Review preferred model licenses to ensure compatibility with end usecase.
+3) Evaluate use case for streaming vs. batch mode
