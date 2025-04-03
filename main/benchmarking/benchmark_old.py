@@ -3,15 +3,26 @@ LLM Benchmarking Script for comparing different models.
 
 This script benchmarks various language models using the same set of questions,
 tracking both load time and inference time for each model.
+
+--- prompt to sketch it out ---
+
+Benchmark the following models:
+Phi-3, Llama3.2-1B, Llama3.2-9B, Gemma3-4B, DistilGPT2, T5-Base, T5-Small, T5-Tiny, T5-efficient-Base, T5-efficient-Small, T5-efficient-Tiny, and prhegde/t5-query-reformulation-RL
+Make sure each model is run in most efficient way possible
+Use the same questions as input for all models
+Run each model for 10 iterations
+Please also track the load time of each model (not the download), and unload the model fully from GPU afterwards.
+Use ONNX for the models that support it
+Save the results as a nice HTML file
 """
 import gc
-import json
 import os
 import time
 from typing import Dict, List
 
 import pandas as pd
 import torch
+from optimum.onnxruntime import ORTModelForCausalLM, ORTModelForSeq2SeqLM
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer, AutoModelForSeq2SeqLM,
     pipeline, GPT2Tokenizer
@@ -36,25 +47,12 @@ def clear_gpu_memory():
         torch.cuda.synchronize()
     gc.collect()
 
-
-def format_prompt(model_info, question):
-    """Format the prompt."""
-    
-    TEMPLATE = """
-    You are a search query reformulator.
-    Respond with a JSON object with a single key "queries" containing a list of search queries that answer the input.
-
-    Input: {query}
-    Output:
-    """.strip()
-    
-    return TEMPLATE.format(query=question.strip())
-
-
 def benchmark_model(model_info, questions, iterations=10):
     """Benchmark a model with given questions for multiple iterations."""
     model_name = model_info["name"]
     model_id = model_info["id"]
+    model_type = model_info["type"]
+    use_onnx = model_info.get("onnx", False)
     
     print(f"\nBenchmarking {model_name}...")
     
@@ -65,53 +63,59 @@ def benchmark_model(model_info, questions, iterations=10):
         
         # Load model and measure loading time
         start_time = time.time()
-    
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(model_id,
-                                                     device_map="auto",
-                                                     torch_dtype="auto")
         
-        # get rid of anoying warnings
-        model.generation_config.pad_token_id = tokenizer.pad_token_id
-
-        pipe = pipeline(
-            "text-generation", 
-            model=model, 
-            tokenizer=tokenizer
-        )
+        if model_type == "causal":
+            if use_onnx:
+                model = ORTModelForCausalLM.from_pretrained(model_id)
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+            else:
+                if model_id == "distilgpt2":
+                    tokenizer = GPT2Tokenizer.from_pretrained(model_id)
+                else:
+                    tokenizer = AutoTokenizer.from_pretrained(model_id)
+                
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16
+                )
+            pipe = pipeline(
+                "text-generation", 
+                model=model, 
+                tokenizer=tokenizer
+            )
+            
+        elif model_type == "seq2seq":
+            if use_onnx:
+                model = ORTModelForSeq2SeqLM.from_pretrained(model_id, device_map=device)
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                model = AutoModelForSeq2SeqLM.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16
+                )
+            pipe = pipeline(
+                "text2text-generation", 
+                model=model, 
+                tokenizer=tokenizer
+            )
+            pipe = pipeline("text2text-generation", model=model, tokenizer=tokenizer)
         
         loading_time = time.time() - start_time
         
         # Process each question
         for q_idx, question in enumerate(questions):
-            formatted_prompt = format_prompt(model_info, question)
-            reformulations = []
-        
             start_time = time.time()
             
-            response = pipe(
-                formatted_prompt, 
-                max_new_tokens=200, 
-                do_sample=False,
-                top_k=None,
-                top_p=None,
-                temperature=None,
-                return_full_text=False
-            )[0]["generated_text"]
-            
-            
-            start = response.find("{")
-            end = response.find("}") + 1
-            try:
-                parsed = json.loads(response[start:end])
-                # lowercase them, and remove duplicates
-                parsed["queries"] = list(set([q.lower() for q in parsed["queries"]]))
-                output = parsed["queries"]
-            except Exception as e:
-                output = [f"Failed to parse response: {response[start:end]}"]
+            if model_type == "causal":
+                output = pipe(question, max_new_tokens=100, do_sample=False)[0]["generated_text"]
+                # For causal models, the output includes the input, so we need to extract only the generated text
+                if output.startswith(question):
+                    output = output[len(question):].strip()
+            else:
+                output = pipe(question, max_length=100)[0]["generated_text"]
             
             inference_time = time.time() - start_time
-            reformulations.append(output)
             
             results.append({
                 "model": model_name,
@@ -122,9 +126,6 @@ def benchmark_model(model_info, questions, iterations=10):
                 "inference_time": inference_time,
                 "loading_time": loading_time if q_idx == 0 else None  # Only record loading time once per iteration
             })
-            
-            # Update all reformulations for the final result
-            results[-1]["all_reformulations"] = reformulations
         
         # Explicitly delete model and tokenizer
         del model, tokenizer, pipe
@@ -133,16 +134,25 @@ def benchmark_model(model_info, questions, iterations=10):
     return results
 
 models = [
-    {"name": "phi-2", "id": "microsoft/phi-2"},
-    {"name": "Phi-3-mini-4k-instruct", "id": "microsoft/phi-3-mini-4k-instruct"},
-    {"name": "Phi-3-mini-128k-instruct", "id": "microsoft/phi-3-mini-128k-instruct"},
-    {"name": "Phi-4-mini-instruct", "id": "microsoft/Phi-4-mini-instruct"},
-    {"name": "Llama3.2-3B-Instruct", "id": "meta-llama/Llama-3.2-3B-Instruct"},
-    {"name": "Gemma3-1B-Instruct", "id": "google/gemma-3-1b-it"},
-    {"name": "Gemma3-4B-Instruct", "id": "google/gemma-3-4b-it"},
-    {"name": "Qwen2.5-7B-Instruct", "id": "Qwen/Qwen2.5-7B-Instruct"},
-    {"name": "Nemotron-Mini-4B-Instruct", "id": "nvidia/Nemotron-Mini-4B-Instruct"},
+    {"name": "Phi-3-mini", "id": "microsoft/phi-3-mini-4k-instruct", "type": "causal", "onnx": True},
+    {"name": "Llama3.2-1B", "id": "meta-llama/Meta-Llama-3.2-1B", "type": "causal", "token": True},
+    {"name": "Llama3.2-3B", "id": "meta-llama/Meta-Llama-3.2-3B", "type": "causal", "token": True},
+    {"name": "Llama3.2-1B-Instruct", "id": "meta-llama/Meta-Llama-3.2-1B-Instruct", "type": "causal", "token": True},
+    {"name": "Llama3.2-3B-Instruct", "id": "meta-llama/Meta-Llama-3.2-3B-Instruct", "type": "causal", "token": True},
+    {"name": "Gemma3-1B", "id": "google/gemma-3-1b-it", "type": "causal", "token": True},
+    {"name": "Gemma3-4B", "id": "google/gemma-3-4b-it", "type": "causal", "token": True},
+    {"name": "DistilGPT2", "id": "distilgpt2", "type": "causal", "onnx": False},
+    {"name": "T5-Base", "id": "t5-base", "type": "seq2seq", "onnx": True},
+    {"name": "T5-Small", "id": "t5-small", "type": "seq2seq", "onnx": True},
+    {"name": "T5-Tiny", "id": "t5-tiny", "type": "seq2seq", "onnx": True},
+    {"name": "T5-efficient-Base", "id": "google/t5-efficient-base", "type": "seq2seq"},
+    {"name": "T5-efficient-Small", "id": "google/t5-efficient-small", "type": "seq2seq"},
+    {"name": "T5-efficient-Tiny", "id": "google/t5-efficient-tiny", "type": "seq2seq"},
+    {"name": "T5-query-reformulation-RL", "id": "prhegde/t5-query-reformulation-RL", "type": "seq2seq"}
 ]
+
+# Define all models to benchmark
+
 
 # Run benchmarks
 all_results = []
@@ -156,9 +166,9 @@ for model_info in models:
 # Convert results to DataFrame
 results_df = pd.DataFrame(all_results)
 
-# Save results as JSON
-with open("llm_benchmark_results.json", "w", encoding="utf-8") as f:
-    json.dump(all_results, f, indent=2)
+# write to disk
+results_df.to_csv("llm_benchmark_results.csv", index=False)
+
 
 # Calculate aggregate statistics
 stats_df = results_df.groupby("model").agg({
@@ -168,11 +178,6 @@ stats_df = results_df.groupby("model").agg({
 
 # Flatten the multi-index columns
 stats_df.columns = ['_'.join(col).strip('_') for col in stats_df.columns.values]
-
-# Save stats as JSON
-stats_dict = stats_df.to_dict(orient="records")
-with open("llm_benchmark_stats.json", "w", encoding="utf-8") as f:
-    json.dump(stats_dict, f, indent=2)
 
 # Create HTML report
 def generate_html_report(results_df, stats_df):
@@ -265,18 +270,7 @@ def generate_html_report(results_df, stats_df):
                             <div class="mb-3">
                                 <h5>Question {row['question_idx']}</h5>
                                 <p><strong>Input:</strong> {row['question']}</p>
-                                <hr>
-                                <h6>Reformulations:</h6>
-            """
-            
-            # Display all reformulations
-            for idx, reformulation in enumerate(row['all_reformulations']):
-                html_content += f"""
-                                <p><strong>Version {idx+1}:</strong> {reformulation}</p>
-                """
-            
-            html_content += f"""
-                                <hr>
+                                <p><strong>Output:</strong> {row['output']}</p>
                                 <p><strong>Inference time:</strong> {row['inference_time']:.4f} seconds</p>
                                 <hr>
                             </div>
@@ -291,17 +285,22 @@ def generate_html_report(results_df, stats_df):
     # Finish HTML content
     html_content += f"""
             </div>
+            
+            <h2 class="mt-4">Raw Data</h2>
+            <div class="table-responsive">
+                {results_df.to_html(classes="table table-striped", index=False)}
+            </div>
         </div>
         
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.0/dist/js/bootstrap.bundle.min.js"></script>
-        <script>
-            const plot1 = {fig1.to_json()};
-            const plot2 = {fig2.to_json()};
-            const plot3 = {fig3.to_json()};
-            
-            Plotly.newPlot('plot1', plot1.data, plot1.layout);
-            Plotly.newPlot('plot2', plot2.data, plot2.layout);
-            Plotly.newPlot('plot3', plot3.data, plot3.layout);
+with open("llm_benchmark_results.html", "w", encoding="utf-8") as f:
+    f.write(html_report)
+
+print("\nBenchmarking complete. Results saved to llm_benchmark_results.html")
+
+# Also save results as CSV for further analysis
+results_df.to_csv("llm_benchmark_results.csv", index=False)
+stats_df.to_csv("llm_benchmark_stats.csv", index=False)ayout);
         </script>
     </body>
     </html>
@@ -311,7 +310,11 @@ def generate_html_report(results_df, stats_df):
 
 # Generate and save HTML report
 html_report = generate_html_report(results_df, stats_df)
-with open("llm_benchmark_results.html", "w", encoding="utf-8") as f:
+with open("llm_benchmark_results.html", "w") as f:
     f.write(html_report)
 
-print(f"\nBenchmarking complete. Results saved to llm_benchmark_results.html and JSON files")
+print(f"\nBenchmarking complete. Results saved to llm_benchmark_results.html")
+
+# Also save results as CSV for further analysis
+results_df.to_csv("llm_benchmark_results.csv", index=False)
+stats_df.to_csv("llm_benchmark_stats.csv", index=False)

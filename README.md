@@ -59,6 +59,7 @@ python server.py
     * https://arxiv.org/abs/2002.02631 (this is about the reverse process, which isn't directly useful, but, good for ideas/data)
     * https://dl.acm.org/doi/abs/10.1162/coli_a_00010
     * https://ieeexplore.ieee.org/document/10508170 (2023, more recent, but not very relevant to this task - until it needs to scale)
+    * https://aclanthology.org/2022.emnlp-main.814/ - really interesting new research
   * Models considered
     * Phi-3 Mini (very optimized for low latency, and many hardware options via ONNX)
     * Mixtral (may be good, but requirements are higher, come back to it later?)
@@ -68,6 +69,12 @@ python server.py
     * T5-Small or T5-Base (or even Tiny? with their efficient variants also worth considering) - text-text models, also work with ONNX
     * prhegde/t5-query-reformulation-RL - this is specifically designed for a task such as what we're doing, and based on T5-Base. Advantage being it ensures the queries which are returned are more diverse.
 2) Create a benchmarking script/notebook, and evaluate the models for speed and quality of results
+  * getting 'ok' results from some of the models, but it's going to take more time than I have to experiment further.
+  * fiddled with prompts a bit
+  * going to research more techniques/models for query reformulation
+3) After more research, narrowed focus to only "instruct" models to keep things simpler, and got rid of some that didn't perform well.
+  * also fine tuned the prompt, parsing, and did a number of smaller experiments with individual models (checked in)
+  * getting decent quality results now, and approaching timing target in some cases.
 3) Make a decision on model
 4) Create a little webapp to demonstrate it
 
